@@ -2,7 +2,6 @@
 #define SCHEDULING_H
 
 #include <time.h>
-#include <configTime.h>
 
 #define MAX_SCHEDULES 10
 
@@ -32,7 +31,7 @@ public:
   }
   
   void begin() {
-    // Configure NTP
+    // Configure NTP - configTime is built-in ESP8266 function
     configTime(0, 0, "pool.ntp.org", "time.nist.gov");
   }
   
@@ -56,8 +55,10 @@ public:
       timeMatch = (currentMinutes >= startMinutes || currentMinutes < endMinutes);
     }
     
-    // Check if day matches (0 = Monday)
-    bool dayMatch = (schedules[index].daysOfWeek & (1 << timeinfo->tm_wday));
+    // Check if day matches (wday: 0=Sunday, 1=Monday, ...)
+    // Convert to our format where 0=Monday
+    int wday = (timeinfo->tm_wday + 6) % 7;
+    bool dayMatch = (schedules[index].daysOfWeek & (1 << wday));
     
     if (timeMatch && dayMatch) {
       mode = schedules[index].mode;
