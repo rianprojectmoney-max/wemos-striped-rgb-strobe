@@ -1,0 +1,22 @@
+# Arduino/ESP8266
+*.elf
+*.bin
+*.hex
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Node
+node_modules/
+.npm
