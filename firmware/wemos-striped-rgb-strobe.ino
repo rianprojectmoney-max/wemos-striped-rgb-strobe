@@ -46,7 +46,7 @@ unsigned long updateInterval = 50;
 // Scheduler
 Scheduler scheduler;
 
-// Color Palette (avoiding yellow and rainbow)
+// Extended Color Palette (20 colors - avoiding yellow and rainbow)
 const CRGB colorPalette[] = {
   CRGB::Red,          // 0
   CRGB::Blue,         // 1
@@ -71,7 +71,7 @@ const CRGB colorPalette[] = {
 };
 const uint8_t PALETTE_SIZE = sizeof(colorPalette) / sizeof(colorPalette[0]);
 
-// 5-Color Strobe Patterns
+// 5-Color Strobe Patterns (for modes 140-210)
 const CRGB strobePattern5Color1[] = {CRGB::Red, CRGB::Blue, CRGB::Green, CRGB::Magenta, CRGB::Cyan};
 const CRGB strobePattern5Color2[] = {CRGB::Purple, CRGB(255, 20, 147), CRGB(30, 144, 255), CRGB(138, 43, 226), CRGB(220, 20, 60)};
 const CRGB strobePattern5Color3[] = {CRGB::Magenta, CRGB(0, 206, 209), CRGB(199, 21, 133), CRGB(75, 0, 130), CRGB(255, 69, 0)};
@@ -87,6 +87,7 @@ struct Preset {
 };
 
 Preset presets[20];
+Preset welcomePresets[20];
 
 void setup() {
   Serial.begin(115200);
@@ -98,8 +99,10 @@ void setup() {
   FastLED.addLeds<WS2812B, STRIP3_PIN, GRB>(leds3, STRIP3_LEDS);
   FastLED.addLeds<WS2812B, STRIP4_PIN, GRB>(leds4, STRIP4_LEDS);
   FastLED.setBrightness(brightness);
+  FastLED.setMaxPowerInVolts(5);
+  FastLED.setMaxPowerInMilliamps(3000);
   
-  // Initialize SPIFFS
+  // Initialize LittleFS
   if (!LittleFS.begin()) {
     Serial.println("LittleFS initialization failed!");
   }
@@ -107,6 +110,7 @@ void setup() {
   // Load settings
   loadSettingsFromFS();
   loadPresetsFromFS();
+  loadWelcomePresetsFromFS();
   
   // Initialize scheduler
   scheduler.begin();
@@ -117,10 +121,14 @@ void setup() {
   // Setup Web Server
   setupWebServer();
   
+  // Play welcome animation
+  playWelcomeAnimation();
+  
   Serial.println("\n=== Wemos D1 Mini - Striped RGB Strobe Module ===");
   Serial.println("WiFi: " + String(ssid));
   Serial.println("Password: " + String(password));
   Serial.println("Web: http://192.168.4.1");
+  Serial.println("Web Password: " + String(webPassword));
   Serial.println("Ready for control!");
 }
 
@@ -165,6 +173,8 @@ void setupWebServer() {
   server.on("/api/presets", handlePresets);
   server.on("/api/preset/save", handleSavePreset);
   server.on("/api/preset/load", handleLoadPreset);
+  server.on("/api/welcome-presets", handleWelcomePresets);
+  server.on("/api/welcome-preset/load", handleLoadWelcomePreset);
   server.on("/api/settings/wifi", handleWiFiSettings);
   server.on("/api/schedule/add", handleAddSchedule);
   server.on("/api/schedule/list", handleListSchedules);
@@ -274,6 +284,44 @@ void handleLoadPreset() {
     selectedColor = presets[idx].color;
     FastLED.setBrightness(brightness);
     server.send(200, "text/plain", "Preset loaded");
+  } else {
+    server.send(400, "text/plain", "Invalid index");
+  }
+}
+
+void handleWelcomePresets() {
+  DynamicJsonDocument doc(2048);
+  JsonArray presetArray = doc.createNestedArray("presets");
+  
+  for (int i = 0; i < 20; i++) {
+    JsonObject preset = presetArray.createNestedObject();
+    preset["index"] = i;
+    preset["name"] = welcomePresets[i].name;
+    preset["mode"] = welcomePresets[i].mode;
+    preset["brightness"] = welcomePresets[i].brightness;
+    preset["speed"] = welcomePresets[i].speed;
+    preset["color"] = welcomePresets[i].color;
+  }
+  
+  String response;
+  serializeJson(doc, response);
+  server.send(200, "application/json", response);
+}
+
+void handleLoadWelcomePreset() {
+  if (!server.hasArg("pass") || strcmp(server.arg("pass").c_str(), webPassword) != 0) {
+    server.send(401, "text/plain", "Unauthorized");
+    return;
+  }
+  
+  int idx = server.arg("index").toInt();
+  if (idx >= 0 && idx < 20) {
+    currentMode = welcomePresets[idx].mode;
+    brightness = welcomePresets[idx].brightness;
+    speed = welcomePresets[idx].speed;
+    selectedColor = welcomePresets[idx].color;
+    FastLED.setBrightness(brightness);
+    server.send(200, "text/plain", "Welcome preset loaded");
   } else {
     server.send(400, "text/plain", "Invalid index");
   }
@@ -425,6 +473,91 @@ void loadPresetsFromFS() {
   savePresetsToFS();
 }
 
+void saveWelcomePresetsToFS() {
+  DynamicJsonDocument doc(2048);
+  JsonArray presetArray = doc.createNestedArray("presets");
+  
+  for (int i = 0; i < 20; i++) {
+    JsonObject preset = presetArray.createNestedObject();
+    preset["mode"] = welcomePresets[i].mode;
+    preset["brightness"] = welcomePresets[i].brightness;
+    preset["speed"] = welcomePresets[i].speed;
+    preset["color"] = welcomePresets[i].color;
+    preset["name"] = welcomePresets[i].name;
+  }
+  
+  File file = LittleFS.open("/welcome_presets.json", "w");
+  if (file) {
+    serializeJson(doc, file);
+    file.close();
+  }
+}
+
+void loadWelcomePresetsFromFS() {
+  if (LittleFS.exists("/welcome_presets.json")) {
+    File file = LittleFS.open("/welcome_presets.json", "r");
+    if (file) {
+      DynamicJsonDocument doc(2048);
+      deserializeJson(doc, file);
+      file.close();
+      
+      JsonArray presetArray = doc["presets"];
+      for (int i = 0; i < 20 && i < presetArray.size(); i++) {
+        welcomePresets[i].mode = presetArray[i]["mode"];
+        welcomePresets[i].brightness = presetArray[i]["brightness"];
+        welcomePresets[i].speed = presetArray[i]["speed"];
+        welcomePresets[i].color = presetArray[i]["color"];
+        strncpy(welcomePresets[i].name, presetArray[i]["name"], 31);
+      }
+      return;
+    }
+  }
+  
+  // Initialize cool default welcome presets
+  initializeDefaultWelcomePresets();
+  saveWelcomePresetsToFS();
+}
+
+void initializeDefaultWelcomePresets() {
+  // 20 cool welcome presets
+  struct DefaultWelcome {
+    uint16_t mode;
+    uint8_t brightness;
+    uint8_t speed;
+    uint8_t color;
+    const char* name;
+  } defaults[] = {
+    {210, 255, 100, 0, "Rainbow Flow"},
+    {209, 255, 150, 3, "Cyan Breather"},
+    {175, 255, 200, 4, "Purple Strobe"},
+    {208, 255, 180, 5, "5-Color Blast"},
+    {170, 255, 180, 1, "Blue Flash"},
+    {205, 255, 160, 2, "Green Pulse"},
+    {140, 255, 220, 4, "Magenta Mix"},
+    {180, 255, 190, 6, "Pink Strobe"},
+    {150, 255, 170, 8, "Orange Pulse"},
+    {195, 255, 200, 9, "Dark Magic"},
+    {160, 255, 160, 14, "Red Crimson"},
+    {185, 255, 210, 13, "Violet Dream"},
+    {155, 255, 180, 12, "Turquoise"},
+    {200, 255, 150, 11, "Blue Dodge"},
+    {145, 255, 190, 17, "Spring Green"},
+    {210, 200, 120, 4, "Soft Flow"},
+    {209, 255, 200, 16, "Violet Red"},
+    {165, 255, 180, 18, "Lime Strobe"},
+    {190, 255, 170, 19, "Aqua Pulse"},
+    {175, 255, 150, 0, "Red Welcome"}
+  };
+  
+  for (int i = 0; i < 20; i++) {
+    welcomePresets[i].mode = defaults[i].mode;
+    welcomePresets[i].brightness = defaults[i].brightness;
+    welcomePresets[i].speed = defaults[i].speed;
+    welcomePresets[i].color = defaults[i].color;
+    strncpy(welcomePresets[i].name, defaults[i].name, 31);
+  }
+}
+
 void saveSettingsToFS() {
   DynamicJsonDocument doc(256);
   doc["ssid"] = ssid;
@@ -461,10 +594,26 @@ void clearAllLeds() {
   fill_solid(leds4, STRIP4_LEDS, CRGB::Black);
 }
 
+void playWelcomeAnimation() {
+  // Play a nice welcome sequence
+  for (int i = 0; i < 3; i++) {
+    fill_solid(leds1, STRIP1_LEDS, CRGB::Cyan);
+    fill_solid(leds2, STRIP2_LEDS, CRGB::Magenta);
+    fill_solid(leds3, STRIP3_LEDS, CRGB::Magenta);
+    fill_solid(leds4, STRIP4_LEDS, CRGB::Cyan);
+    FastLED.show();
+    delay(200);
+    clearAllLeds();
+    FastLED.show();
+    delay(200);
+  }
+}
+
 void playAnimation(uint16_t mode) {
   static unsigned long animCycle = 0;
   animCycle++;
   
+  // Modes 1-50: Solid colors (50 variations)
   if (mode >= 1 && mode <= 50) {
     uint8_t colorIdx = (mode - 1) % PALETTE_SIZE;
     CRGB color = colorPalette[colorIdx];
@@ -473,6 +622,7 @@ void playAnimation(uint16_t mode) {
     fill_solid(leds3, STRIP3_LEDS, color);
     fill_solid(leds4, STRIP4_LEDS, color);
   }
+  // Modes 51-80: Breathing effects (30 variations)
   else if (mode >= 51 && mode <= 80) {
     uint8_t colorIdx = (mode - 51) % PALETTE_SIZE;
     CRGB color = colorPalette[colorIdx];
@@ -484,6 +634,7 @@ void playAnimation(uint16_t mode) {
     fill_solid(leds3, STRIP3_LEDS, breatheColor);
     fill_solid(leds4, STRIP4_LEDS, breatheColor);
   }
+  // Modes 81-110: Pulsing animations (30 variations)
   else if (mode >= 81 && mode <= 110) {
     uint8_t colorIdx = (mode - 81) % PALETTE_SIZE;
     CRGB color = colorPalette[colorIdx];
@@ -496,6 +647,7 @@ void playAnimation(uint16_t mode) {
     fill_solid(leds3, STRIP3_LEDS, pulseColor);
     fill_solid(leds4, STRIP4_LEDS, pulseColor);
   }
+  // Modes 111-139: Alternating strip patterns (29 variations)
   else if (mode >= 111 && mode <= 139) {
     uint8_t colorIdx1 = (mode - 111) % PALETTE_SIZE;
     uint8_t colorIdx2 = (colorIdx1 + 1) % PALETTE_SIZE;
@@ -517,6 +669,7 @@ void playAnimation(uint16_t mode) {
       fill_solid(leds4, STRIP4_LEDS, color2);
     }
   }
+  // Modes 140-175: 2-Stripe strobe effects (36 variations)
   else if (mode >= 140 && mode <= 175) {
     uint8_t patternIdx = (mode - 140) % 8;
     uint16_t strobePhase = animCycle % ((256 - speed) + 1);
@@ -537,6 +690,7 @@ void playAnimation(uint16_t mode) {
       fill_solid(leds4, STRIP4_LEDS, color2);
     }
   }
+  // Modes 176-208: 5-Color multi-stripe patterns (33 variations)
   else if (mode >= 176 && mode <= 208) {
     uint8_t patternType = (mode - 176) % 5;
     const CRGB* pattern = selectFiveColorPattern(patternType);
@@ -550,6 +704,7 @@ void playAnimation(uint16_t mode) {
     fill_solid(leds3, STRIP3_LEDS, strobeColor);
     fill_solid(leds4, STRIP4_LEDS, strobeColor);
   }
+  // Mode 209: Interactive color-change mode (customizable via selectedColor)
   else if (mode == 209) {
     CRGB color = colorPalette[selectedColor];
     uint8_t breathe = 128 + 127 * sin8(animCycle * 2);
@@ -559,6 +714,7 @@ void playAnimation(uint16_t mode) {
     fill_solid(leds3, STRIP3_LEDS, color);
     fill_solid(leds4, STRIP4_LEDS, color);
   }
+  // Mode 210: Auto-cycling 5-stripe pattern (no yellow, 5 stripe colors alternate automatically)
   else if (mode == 210) {
     uint16_t cyclePhase = animCycle % ((256 - speed) + 1);
     uint8_t colorIdx = (cyclePhase / ((256 - speed) / 5 + 1)) % 5;
@@ -570,6 +726,7 @@ void playAnimation(uint16_t mode) {
     fill_solid(leds3, STRIP3_LEDS, color);
     fill_solid(leds4, STRIP4_LEDS, color);
   }
+  // Default: clear
   else {
     clearAllLeds();
   }
@@ -734,7 +891,7 @@ const char CONTROL_PAGE[] PROGMEM = R"====(
       padding: 20px;
     }
     .container {
-      max-width: 800px;
+      max-width: 1000px;
       margin: 0 auto;
     }
     h1 {
@@ -770,6 +927,7 @@ const char CONTROL_PAGE[] PROGMEM = R"====(
     }
     input[type="range"],
     input[type="number"],
+    input[type="text"],
     select {
       width: 100%;
       padding: 10px;
@@ -785,10 +943,12 @@ const char CONTROL_PAGE[] PROGMEM = R"====(
       height: 6px;
     }
     input[type="number"],
+    input[type="text"],
     select {
       padding: 10px;
     }
     input[type="number"]:focus,
+    input[type="text"]:focus,
     select:focus {
       outline: none;
       border-color: #667eea;
@@ -869,6 +1029,14 @@ const char CONTROL_PAGE[] PROGMEM = R"====(
       background: #5a1a1a;
       color: #ff6b6b;
     }
+    .mode-info {
+      background: #222;
+      padding: 10px;
+      border-radius: 5px;
+      margin-top: 10px;
+      font-size: 13px;
+      color: #aaa;
+    }
     @media (max-width: 600px) {
       .button-group {
         grid-template-columns: 1fr;
@@ -876,19 +1044,23 @@ const char CONTROL_PAGE[] PROGMEM = R"====(
       h1 {
         font-size: 24px;
       }
+      .preset-grid {
+        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      }
     }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1>✨ Striped RGB Strobe</h1>
+    <h1>✨ Striped RGB Strobe - 210 Modes</h1>
     <div id="status"></div>
     
     <div class="section">
-      <div class="section-title">Animation Control</div>
+      <div class="section-title">🎨 Animation Control</div>
       <div class="control-group">
         <label for="mode">Mode (1-210): <span class="value-display" id="modeValue">1</span></label>
         <input type="number" id="mode" name="mode" min="1" max="210" value="1">
+        <div class="mode-info" id="modeInfo">Solid Colors (1-50), Breathing (51-80), Pulsing (81-110), Alternating (111-139), 2-Stripe Strobe (140-175), 5-Color Strobe (176-208), Interactive Color (209), Auto Rainbow (210)</div>
       </div>
       <div class="control-group">
         <label for="brightness">Brightness: <span class="value-display" id="brightnessValue">255</span></label>
@@ -903,18 +1075,23 @@ const char CONTROL_PAGE[] PROGMEM = R"====(
         <input type="number" id="color" name="color" min="0" max="19" value="0">
       </div>
       <div class="button-group">
-        <button onclick="updateControl()">Apply</button>
+        <button onclick="updateControl()">Apply Settings</button>
         <button onclick="toggleAnimation()">Toggle Animation</button>
       </div>
     </div>
     
     <div class="section">
-      <div class="section-title">Quick Presets</div>
+      <div class="section-title">⭐ Welcome Presets (20)</div>
+      <div class="preset-grid" id="welcomePresetGrid"></div>
+    </div>
+    
+    <div class="section">
+      <div class="section-title">📁 Quick Presets</div>
       <div class="preset-grid" id="presetGrid"></div>
     </div>
     
     <div class="section">
-      <div class="section-title">Preset Manager</div>
+      <div class="section-title">💾 Preset Manager</div>
       <div class="control-group">
         <label for="presetName">Preset Name:</label>
         <input type="text" id="presetName" placeholder="Enter preset name">
@@ -1025,6 +1202,30 @@ const char CONTROL_PAGE[] PROGMEM = R"====(
         });
     }
     
+    function loadWelcomePresets() {
+      fetch('/api/welcome-presets')
+        .then(r => r.json())
+        .then(data => {
+          const grid = document.getElementById('welcomePresetGrid');
+          grid.innerHTML = '';
+          data.presets.forEach((preset, idx) => {
+            const btn = document.createElement('button');
+            btn.className = 'preset-btn';
+            btn.textContent = preset.name || ('Welcome ' + (idx + 1));
+            btn.onclick = () => {
+              fetch('/api/welcome-preset/load?index=' + idx + '&pass=' + pass)
+                .then(r => r.text())
+                .then(d => {
+                  showStatus('Loaded: ' + preset.name, 'success');
+                  loadStatus();
+                })
+                .catch(e => showStatus('Error loading preset', 'error'));
+            };
+            grid.appendChild(btn);
+          });
+        });
+    }
+    
     function showStatus(msg, type) {
       const status = document.getElementById('status');
       status.textContent = msg;
@@ -1049,6 +1250,7 @@ const char CONTROL_PAGE[] PROGMEM = R"====(
     
     loadStatus();
     loadPresets();
+    loadWelcomePresets();
   </script>
 </body>
 </html>
